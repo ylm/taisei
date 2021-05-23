@@ -36,7 +36,7 @@ static bool stage4_fog(Framebuffer *fb) {
 }
 
 static bool should_draw_water(void) {
-	return stage_3d_context.cam.pos[1] < 0;
+	return stage_3d_context.cam.pos[1] < 0 && config_get_int(CONFIG_POSTPROCESS) > 1;
 }
 
 static bool stage4_water(Framebuffer *fb) {
