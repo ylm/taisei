@@ -9,6 +9,7 @@
 glsl_files = files(
 # @begin glsl
     'alpha_depth.frag.glsl',
+    'alpha_discard.frag.glsl',
     'baryon_feedback.frag.glsl',
     'bloom.frag.glsl',
     'blur13.frag.glsl',

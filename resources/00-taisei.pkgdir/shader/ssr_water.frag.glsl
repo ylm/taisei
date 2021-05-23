@@ -25,13 +25,13 @@ void main(void) {
 	mat3 tbn = mat3(normalize(tangent), normalize(bitangent), normalize(normal));
 	vec3 n = normalize(tbn*vec3(-dheightduv, 1));
 
-	vec3 reflected_ray = pos - 2 * dot(n, pos) * n;
+	vec3 reflected_ray = reflect(pos, n);
 	reflected_ray /= length(reflected_ray.xy);
 	float step_size = 15./steps;
 
 	fragColor = r_color;
 	int ihit = 0;
-	
+
 	for(int i = 1; i < steps; i++) {
 		vec3 raypos = pos + i * step_size * reflected_ray;
 		vec3 raycoord = pos_to_texcoord(raypos);

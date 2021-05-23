@@ -106,10 +106,11 @@ static void stage4_preload(void) {
 		"stage6/scythe", // Stage 6 is intentional
 	NULL);
 	preload_resources(RES_SHADER_PROGRAM, RESF_DEFAULT,
+		"alpha_discard",
 		"pbr",
+		"sprite_negative",
 		"ssr_water",
 		"zbuf_fog",
-		"sprite_negative",
 	NULL);
 	preload_resources(RES_SHADER_PROGRAM, RESF_OPTIONAL,
 		"lasers/accelerated",

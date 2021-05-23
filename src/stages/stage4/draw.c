@@ -35,7 +35,15 @@ static bool stage4_fog(Framebuffer *fb) {
 	return true;
 }
 
+static bool should_draw_water(void) {
+	return stage_3d_context.cam.pos[1] < 0;
+}
+
 static bool stage4_water(Framebuffer *fb) {
+	if(!should_draw_water()) {
+		return false;
+	}
+
 	r_clear(CLEAR_COLOR, RGBA(0, 0, 0, 0), 1);
 	r_mat_proj_push_perspective(stage_3d_context.cam.fovy, stage_3d_context.cam.aspect, stage_3d_context.cam.near, stage_3d_context.cam.far);
 	r_state_push();
@@ -61,12 +69,16 @@ static bool stage4_water(Framebuffer *fb) {
 }
 
 static bool stage4_water_composite(Framebuffer *reflections) {
-	r_shader_standard();
-	r_blend(BLEND_PREMUL_ALPHA);
+	if(!should_draw_water()) {
+		return false;
+	}
+
+	r_shader("alpha_discard");
+	r_blend(BLEND_NONE);
+	r_uniform_float("threshold", 1);
 	draw_framebuffer_tex(reflections, VIEWPORT_W, VIEWPORT_H);
 	return true;
 }
-
 
 static uint stage4_lake_pos(Stage3D *s3d, vec3 pos, float maxrange) {
 	vec3 p = {0, 0, 0};
