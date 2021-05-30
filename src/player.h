@@ -28,6 +28,7 @@
 #include "stats.h"
 #include "resource/animation.h"
 #include "entity.h"
+#include "replay/state.h"
 
 enum {
 	PLR_MAX_POWER = 400,
@@ -176,6 +177,11 @@ enum {
 	EV_CONTINUE,
 };
 
+typedef enum PlayerEventResult {
+	PLREVT_USEFUL = (1 << 0),
+	PLREVT_CHEAT = (1 << 1),
+} PlayerEventResult;
+
 // This is called first before we even enter stage_loop.
 // It's also called right before syncing player state from a replay stage struct, if a replay is being watched or recorded, before every stage.
 // The entire state is reset here, and defaults for story mode are set.
@@ -204,10 +210,17 @@ void player_realdeath(Player*);
 void player_death(Player*);
 void player_graze(Player *plr, cmplx pos, int pts, int effect_intensity, const Color *color);
 
-void player_event(Player *plr, uint8_t type, uint16_t value, bool *out_useful, bool *out_cheat);
-bool player_event_with_replay(Player *plr, uint8_t type, uint16_t value);
+PlayerEventResult player_event(
+	Player *plr,
+	ReplayState *rpy_in,
+	ReplayState *rpy_out,
+	uint8_t type,
+	uint16_t value
+) attr_nonnull(1);
+void player_fix_input(Player *plr, ReplayState *rpy_out);
 void player_applymovement(Player* plr);
-void player_fix_input(Player *plr);
+// bool player_event_with_replay(Player *plr, ReplayState *rpy, uint8_t type, uint16_t value)
+// 	attr_nonnull(1, 2);
 
 void player_add_life_fragments(Player *plr, int frags);
 void player_add_bomb_fragments(Player *plr, int frags);

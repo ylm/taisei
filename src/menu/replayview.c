@@ -16,6 +16,8 @@
 #include "plrmodes.h"
 #include "video.h"
 #include "common.h"
+#include "replay/state.h"
+#include "replay/struct.h"
 
 // Type of MenuData.context
 typedef struct ReplayviewContext {

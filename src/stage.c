@@ -13,7 +13,9 @@
 #include "global.h"
 #include "video.h"
 #include "resource/bgm.h"
-#include "replay.h"
+#include "replay/state.h"
+#include "replay/stage.h"
+#include "replay/struct.h"
 #include "config.h"
 #include "player.h"
 #include "menu/ingamemenu.h"
@@ -224,11 +226,13 @@ void stage_pause(void) {
 		return;
 	}
 
-	MenuData *m = (
-		global.replaymode == REPLAY_PLAY
-			? create_ingame_menu_replay
-			: create_ingame_menu
-	)();
+	MenuData *m;
+
+	if(global.replay.input.replay) {
+		m = create_ingame_menu_replay();
+	} else {
+		m = create_ingame_menu();
+	}
 
 	stage_enter_ingame_menu(m, NULL, NO_CALLCHAIN);
 }
@@ -327,25 +331,35 @@ static bool stage_input_handler_gameplay(SDL_Event *event, void *arg) {
 		return false;
 	}
 
+	if(
+		(type == TE_GAME_KEY_DOWN || type == TE_GAME_KEY_UP) &&
+		code == KEY_SHOT &&
+		config_get_int(CONFIG_SHOT_INVERTED)
+	) {
+		type = type == TE_GAME_KEY_DOWN ? TE_GAME_KEY_UP : TE_GAME_KEY_DOWN;
+	}
+
+	ReplayState *rpy = &global.replay.output;
+
 	switch(type) {
 		case TE_GAME_KEY_DOWN:
 			if(stage_input_key_filter(code, false)) {
-				player_event_with_replay(&global.plr, EV_PRESS, code);
+				player_event(&global.plr, NULL, rpy, EV_PRESS, code);
 			}
 			break;
 
 		case TE_GAME_KEY_UP:
 			if(stage_input_key_filter(code, true)) {
-				player_event_with_replay(&global.plr, EV_RELEASE, code);
+				player_event(&global.plr, NULL, rpy, EV_RELEASE, code);
 			}
 			break;
 
 		case TE_GAME_AXIS_LR:
-			player_event_with_replay(&global.plr, EV_AXIS_LR, (uint16_t)code);
+			player_event(&global.plr, NULL, rpy, EV_AXIS_LR, (uint16_t)code);
 			break;
 
 		case TE_GAME_AXIS_UD:
-			player_event_with_replay(&global.plr, EV_AXIS_UD, (uint16_t)code);
+			player_event(&global.plr, NULL, rpy, EV_AXIS_UD, (uint16_t)code);
 			break;
 
 		default: break;
@@ -360,7 +374,8 @@ static bool stage_input_handler_replay(SDL_Event *event, void *arg) {
 }
 
 static void replay_input(void) {
-	ReplayStage *s = global.replay_stage;
+	ReplayState *st = &global.replay.input;
+	ReplayStage *s = st->stage;
 	int i = 0;
 
 	events_poll((EventHandler[]){
@@ -368,7 +383,7 @@ static void replay_input(void) {
 		{NULL}
 	}, EFLAG_GAME);
 
-	for(i = s->playpos; i < s->events.num_elements; ++i) {
+	for(i = global.replay.input.play.pos; i < s->events.num_elements; ++i) {
 		ReplayEvent *e = dynarray_get_ptr(&s->events, i);
 
 		if(e->frame != global.frames) {
@@ -381,21 +396,21 @@ static void replay_input(void) {
 				break;
 
 			case EV_CHECK_DESYNC:
-				s->desync_check = e->value;
+				st->play.desync_check = e->value;
 				break;
 
 			case EV_FPS:
-				s->fps = e->value;
+				st->play.fps = e->value;
 				break;
 
 			default: {
-				player_event(&global.plr, e->type, (int16_t)e->value, NULL, NULL);
+				player_event(&global.plr, st, &global.replay.output, e->type, (int16_t)e->value);
 				break;
 			}
 		}
 	}
 
-	s->playpos = i;
+	st->play.pos = i;
 	player_applymovement(&global.plr);
 }
 
@@ -435,7 +450,7 @@ static void stage_input(void) {
 		}, EFLAG_GAME);
 	}
 
-	player_fix_input(&global.plr);
+	player_fix_input(&global.plr, &global.replay.output);
 	player_applymovement(&global.plr);
 }
 
@@ -473,8 +488,8 @@ static void stage_logic(void) {
 		global.timer++;
 	}
 
-	if(global.replaymode == REPLAY_PLAY && global.gameover != GAMEOVER_TRANSITIONING) {
-		ReplayStage *rstg = global.replay_stage;
+	if(global.replay.input.replay && global.gameover != GAMEOVER_TRANSITIONING) {
+		ReplayStage *rstg = global.replay.input.stage;
 		ReplayEvent *last_event = dynarray_get_ptr(&rstg->events, rstg->events.num_elements - 1);
 
 		if(global.frames == last_event->frame - FADE_TIME) {
@@ -629,7 +644,7 @@ void stage_finish(int gameover) {
 	}
 
 	if(
-		global.replaymode != REPLAY_PLAY &&
+		global.replay.input.replay == NULL &&
 		prev_gameover != GAMEOVER_SCORESCREEN &&
 		(gameover == GAMEOVER_SCORESCREEN || gameover == GAMEOVER_WIN)
 	) {
@@ -692,11 +707,11 @@ bool stage_is_cleared(void) {
 }
 
 static void stage_update_fps(StageFrameState *fstate) {
-	if(global.replaymode == REPLAY_RECORD) {
+	if(global.replay.output.replay) {
 		uint16_t replay_fps = (uint16_t)rint(global.fps.logic.fps);
 
 		if(replay_fps != fstate->last_replay_fps) {
-			replay_stage_event(global.replay_stage, global.frames, EV_FPS, replay_fps);
+			replay_stage_event(global.replay.output.stage, global.frames, EV_FPS, replay_fps);
 			fstate->last_replay_fps = replay_fps;
 		}
 	}
@@ -752,7 +767,11 @@ static LogicFrameAction stage_logic_frame(void *arg) {
 	fapproach_p(&fstate->view_shake, 0, 1);
 	fapproach_asymptotic_p(&fstate->view_shake, 0, 0.05, 1e-2);
 
-	((global.replaymode == REPLAY_PLAY) ? replay_input : stage_input)();
+	if(global.replay.input.replay != NULL) {
+		replay_input();
+	} else {
+		stage_input();
+	}
 
 	if(global.gameover != GAMEOVER_TRANSITIONING) {
 		cosched_run_tasks(&fstate->sched);
@@ -774,7 +793,10 @@ static LogicFrameAction stage_logic_frame(void *arg) {
 		stage->procs->update();
 	}
 
-	replay_stage_check_desync(global.replay_stage, global.frames, (rng_u64() ^ global.plr.points) & 0xFFFF, global.replaymode);
+	uint16_t desync_check = (rng_u64() ^ global.plr.points) & 0xFFFF;
+
+	replay_state_check_desync(&global.replay.input, global.frames, desync_check);
+	replay_state_check_desync(&global.replay.output, global.frames, desync_check);
 	stage_logic();
 
 	if(fstate->transition_delay) {
@@ -785,7 +807,7 @@ static LogicFrameAction stage_logic_frame(void *arg) {
 		update_transition();
 	}
 
-	if(global.replaymode == REPLAY_RECORD && global.plr.points > progress.hiscore) {
+	if(global.replay.input.replay == NULL && global.plr.points > progress.hiscore) {
 		progress.hiscore = global.plr.points;
 	}
 
@@ -798,7 +820,7 @@ static LogicFrameAction stage_logic_frame(void *arg) {
 		return skipmode;
 	}
 
-	if(global.frameskip || (global.replaymode == REPLAY_PLAY && gamekeypressed(KEY_SKIP))) {
+	if(global.frameskip || (global.replay.input.replay && gamekeypressed(KEY_SKIP))) {
 		return LFRAME_SKIP;
 	}
 
@@ -869,19 +891,22 @@ void stage_enter(StageInfo *stage, CallChain next) {
 	rng_make_active(&global.rand_game);
 	stage_start(stage);
 
-	if(global.replaymode == REPLAY_RECORD) {
-		uint64_t start_time = (uint64_t)time(0);
-		uint64_t seed = makeseed();
-		rng_seed(&global.rand_game, seed);
+	uint64_t start_time, seed;
 
-		global.replay_stage = replay_create_stage(&global.replay, stage, start_time, seed, global.diff, &global.plr);
+	if(global.replay.input.replay) {
+		ReplayStage *rstg = global.replay.input.stage;
 
-		// make sure our player state is consistent with what goes into the replay
-		player_init(&global.plr);
-		replay_stage_sync_player_state(global.replay_stage, &global.plr);
+		assert(rstg != NULL);
+		assert(stageinfo_get_by_id(rstg->stage) == stage);
 
-		log_debug("Start time: %"PRIu64, start_time);
-		log_debug("Random seed: 0x%"PRIx64, seed);
+		start_time = rstg->start_time;
+		seed = rstg->rng_seed;
+		global.diff = rstg->diff;
+
+		log_debug("REPLAY_PLAY mode: %d events, stage: \"%s\"", rstg->events.num_elements, stage->title);
+	} else {
+		start_time = (uint64_t)time(0);
+		seed = makeseed();
 
 		StageProgress *p = stageinfo_get_progress(stage, global.diff, true);
 
@@ -892,22 +917,27 @@ void stage_enter(StageInfo *stage, CallChain next) {
 			++p->num_played;
 			p->unlocked = true;
 		}
-	} else {
-		ReplayStage *stg = global.replay_stage;
+	}
 
-		assert(stg != NULL);
-		assert(stageinfo_get_by_id(stg->stage) == stage);
+	rng_seed(&global.rand_game, seed);
 
-		rng_seed(&global.rand_game, stg->rng_seed);
+	if(global.replay.output.replay) {
+		global.replay.output.stage = replay_create_stage(
+			global.replay.output.replay,
+			stage,
+			start_time,
+			seed,
+			global.diff,
+			&global.plr
+		);
+	}
 
-		log_debug("REPLAY_PLAY mode: %d events, stage: \"%s\"", stg->events.num_elements, stage->title);
-		log_debug("Start time: %"PRIu64, stg->start_time);
-		log_debug("Random seed: 0x%"PRIx64, stg->rng_seed);
-
-		global.diff = stg->diff;
+	if(global.replay.input.replay) {
 		player_init(&global.plr);
-		replay_stage_sync_player_state(stg, &global.plr);
-		stg->playpos = 0;
+		replay_stage_sync_player_state(global.replay.input.stage, &global.plr);
+	} else if(global.replay.output.replay) {
+		player_init(&global.plr);
+		replay_stage_sync_player_state(global.replay.output.stage, &global.plr);
 	}
 
 	StageFrameState *fstate = calloc(1 , sizeof(*fstate));
@@ -934,12 +964,12 @@ void stage_end_loop(void* ctx) {
 	StageFrameState *s = ctx;
 	assert(s == _current_stage_state);
 
-	if(global.replaymode == REPLAY_RECORD) {
-		replay_stage_event(global.replay_stage, global.frames, EV_OVER, 0);
-		global.replay_stage->plr_points_final = global.plr.points;
+	if(global.replay.output.replay) {
+		replay_stage_event(global.replay.output.stage, global.frames, EV_OVER, 0);
+		global.replay.output.stage->plr_points_final = global.plr.points;
 
 		if(global.gameover == GAMEOVER_WIN) {
-			global.replay_stage->flags |= REPLAY_SFLAG_CLEAR;
+			global.replay.output.stage->flags |= REPLAY_SFLAG_CLEAR;
 		}
 	}
 
@@ -970,7 +1000,7 @@ void stage_end_loop(void* ctx) {
 }
 
 void stage_unlock_bgm(const char *bgm) {
-	if(global.replaymode != REPLAY_PLAY && !global.plr.stats.total.continues_used) {
+	if(global.replay.input.replay == NULL && !global.plr.stats.total.continues_used) {
 		progress_unlock_bgm(bgm);
 	}
 }

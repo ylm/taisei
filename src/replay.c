@@ -8,7 +8,10 @@
 
 #include "taisei.h"
 
-#include "replay.h"
+#include "replay/replay.h"
+#include "replay/struct.h"
+#include "replay/stage.h"
+#include "replay/state.h"
 
 #include <time.h>
 
@@ -21,7 +24,7 @@ void replay_init(Replay *rpy) {
 	log_debug("Replay at %p initialized for writing", (void*)rpy);
 }
 
-ReplayStage* replay_create_stage(Replay *rpy, StageInfo *stage, uint64_t start_time, uint64_t seed, Difficulty diff, Player *plr) {
+ReplayStage *replay_create_stage(Replay *rpy, StageInfo *stage, uint64_t start_time, uint64_t seed, Difficulty diff, Player *plr) {
 	ReplayStage *s;
 
 	rpy->stages = (ReplayStage*)realloc(rpy->stages, sizeof(ReplayStage) * (++rpy->numstages));
@@ -799,15 +802,17 @@ void replay_copy(Replay *dst, Replay *src, bool steal_events) {
 	}
 }
 
-void replay_stage_check_desync(ReplayStage *stg, int time, uint16_t check, ReplayMode mode) {
-	if(!stg || time % (FPS * 5)) {
+void replay_state_check_desync(ReplayState *rst, int time, uint16_t check) {
+	if(!rst->stage || time % (FPS * 5)) {
 		return;
 	}
 
-	if(mode == REPLAY_PLAY) {
-		if(stg->desync_check && stg->desync_check != check) {
-			log_warn("Frame %d: replay desync detected! 0x%04x != 0x%04x", time, stg->desync_check, check);
-			stg->desynced = true;
+	assert(rst->replay != NULL);
+
+	if(rst->mode == REPLAY_PLAY) {
+		if(rst->play.desync_check && rst->play.desync_check != check) {
+			log_warn("Frame %d: replay desync detected! 0x%04x != 0x%04x", time, rst->play.desync_check, check);
+			rst->play.desync_frame = time;
 
 			if(global.is_replay_verification) {
 				// log_fatal("Replay verification failed");
@@ -820,9 +825,9 @@ void replay_stage_check_desync(ReplayStage *stg, int time, uint16_t check, Repla
 		}
 	}
 #ifdef REPLAY_WRITE_DESYNC_CHECKS
-	else {
+	else if(rst->mode == REPLAY_RECORD) {
 		// log_debug("0x%04x", check);
-		replay_stage_event(stg, time, EV_CHECK_DESYNC, (int16_t)check);
+		replay_stage_event(rst->stage, time, EV_CHECK_DESYNC, (int16_t)check);
 	}
 #endif
 }
@@ -841,8 +846,27 @@ int replay_find_stage_idx(Replay *rpy, uint8_t stageid) {
 	return -1;
 }
 
+void replay_state_init_play(ReplayState *rst, Replay *rpy, ReplayStage *rstage) {
+	memset(rst, 0, sizeof(*rst));
+	rst->replay = rpy;
+	rst->stage = rstage;
+	rst->mode = REPLAY_PLAY;
+	rst->play.desync_frame = -1;
+}
+
+void replay_state_init_record(ReplayState *rst, Replay *rpy) {
+	memset(rst, 0, sizeof(*rst));
+	rst->replay = rpy;
+	rst->mode = REPLAY_RECORD;
+}
+
+void replay_state_deinit(ReplayState *rst) {
+	memset(rst, 0, sizeof(*rst));
+}
+
 typedef struct ReplayContext {
 	CallChain cc;
+	Replay *rpy;
 	int stage_idx;
 } ReplayContext;
 
@@ -851,21 +875,15 @@ static void replay_do_play(CallChainResult ccr);
 static void replay_do_post_play(CallChainResult ccr);
 
 void replay_play(Replay *rpy, int firstidx, CallChain next) {
-	if(rpy != &global.replay) {
-		replay_copy(&global.replay, rpy, true);
-	}
-
-	if(firstidx >= global.replay.numstages || firstidx < 0) {
+	if(firstidx >= rpy->numstages || firstidx < 0) {
 		log_error("No stage #%i in the replay", firstidx);
-		replay_destroy(&global.replay);
 		run_call_chain(&next, NULL);
 		return;
 	}
 
-	global.replaymode = REPLAY_PLAY;
-
 	ReplayContext *ctx = calloc(1, sizeof(*ctx));
 	ctx->cc = next;
+	ctx->rpy = rpy;
 	ctx->stage_idx = firstidx;
 
 	replay_do_play(CALLCHAIN_RESULT(ctx, NULL));
@@ -875,9 +893,10 @@ static void replay_do_play(CallChainResult ccr) {
 	ReplayContext *ctx = ccr.ctx;
 	ReplayStage *rstg = NULL;
 	StageInfo *stginfo = NULL;
+	Replay *rpy = ctx->rpy;
 
-	while(ctx->stage_idx < global.replay.numstages) {
-		rstg = global.replay_stage = global.replay.stages + ctx->stage_idx++;
+	while(ctx->stage_idx < rpy->numstages) {
+		rstg = rpy->stages + ctx->stage_idx++;
 		stginfo = stageinfo_get_by_id(rstg->stage);
 
 		if(!stginfo) {
@@ -891,6 +910,7 @@ static void replay_do_play(CallChainResult ccr) {
 	if(stginfo == NULL) {
 		replay_do_cleanup(ccr);
 	} else {
+		replay_state_init_play(&global.replay.input, rpy, rstg);
 		global.plr.mode = plrmode_find(rstg->plr_char, rstg->plr_shot);
 		stage_enter(stginfo, CALLCHAIN(replay_do_post_play, ctx));
 	}
@@ -916,9 +936,7 @@ static void replay_do_cleanup(CallChainResult ccr) {
 	ReplayContext *ctx = ccr.ctx;
 
 	global.gameover = 0;
-	global.replaymode = REPLAY_RECORD;
-	replay_destroy(&global.replay);
-	global.replay_stage = NULL;
+	replay_state_deinit(&global.replay.input);
 	free_resources(false);
 
 	CallChain cc = ctx->cc;
